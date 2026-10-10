@@ -1,22 +1,7 @@
-"""Entry point for the university IT policy RAG system.
-
-Usage:
-    python rag.py
-        -> asks the graded question about the IT Service Desk phone number.
-    python rag.py "Your question here"
-        -> answers an arbitrary question from the policy knowledge base.
-    python rag.py --show-context "Your question"
-        -> also prints the retrieved policy excerpts.
-
-The model is the local Qwen3-0.6B. If the knowledge base does not contain the
-answer (it contains no Service Desk phone number), the agent must state that it
-does not know rather than inventing a number.
-"""
-
 import sys
 
 import agent
-import rag_tool  # noqa: F401  (importing builds/validates the retrieval stack)
+import rag_tool
 
 DEFAULT_QUESTION = (
     "What exact phone number should I call for the University IT Service Desk?"

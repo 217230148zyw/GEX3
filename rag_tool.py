@@ -1,17 +1,3 @@
-"""Retrieval tool ("R" in RAG) for the university IT policy exercise.
-
-The single knowledge-base file is loaded exclusively through the FIXED loader
-``policy_loader.load_policy_documents`` (do not edit policy_loader.py). Each
-``[POLICY]`` block becomes one LangChain Document; the documents are embedded
-with a small local sentence-transformer and stored in a persistent local Chroma
-vector store.
-
-Important fact about this knowledge base: it contains NO verified IT Service
-Desk telephone number. Therefore the query "What exact phone number should I
-call ...?" cannot retrieve a document that supplies one -- the agent in
-``agent.py`` is built to abstain in exactly that situation.
-"""
-
 from __future__ import annotations
 
 import os
@@ -22,27 +8,21 @@ from typing import List, Tuple
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
-# The loader is COMPLETE and must be the only way the KB is read.
 from policy_loader import load_policy_documents
 
 ROOT = Path(__file__).resolve().parent
 INDEX_DIR = ROOT / ".chroma_index"
 COLLECTION_NAME = "university_it_policies"
 
-# Small, CPU-friendly English embedding model, fetched from ModelScope (the same
-# Alibaba model host used for Qwen in this exercise) so no Hugging Face access
-# is required.
 EMBED_MODEL_ID = "BAAI/bge-small-en-v1.5"
 EMBED_LOCAL_DIR = ROOT / "models" / "bge-small-en-v1.5"
 
 
 class LocalSentenceTransformerEmbeddings(Embeddings):
-    """LangChain ``Embeddings`` backed by a locally downloaded SentenceTransformer."""
-
     def __init__(self, model_path: str):
         try:
             from sentence_transformers import SentenceTransformer
-        except ImportError as exc:  # pragma: no cover - dependency guidance
+        except ImportError as exc:
             raise ImportError(
                 "sentence-transformers is required. Install with: "
                 "uv pip install sentence-transformers"
@@ -63,7 +43,6 @@ class LocalSentenceTransformerEmbeddings(Embeddings):
 
 
 def _ensure_embedding_model() -> str:
-    """Return a local path to the embedding model, downloading it once if needed."""
     env_path = os.environ.get("EMBED_MODEL_PATH")
     if env_path and Path(env_path).exists():
         return env_path
@@ -82,12 +61,11 @@ def _get_chroma_cls():
     try:
         from langchain_chroma import Chroma
     except ImportError:
-        from langchain_community.vectorstores import Chroma  # type: ignore
+        from langchain_community.vectorstores import Chroma
     return Chroma
 
 
 def build_vector_store(force_rebuild: bool = False):
-    """Embed every policy block once and persist a Chroma index."""
     documents: List[Document] = load_policy_documents()
 
     if force_rebuild and INDEX_DIR.exists():
@@ -131,17 +109,10 @@ def get_vector_store(force_rebuild: bool = False):
 
 
 def get_retriever(k: int = 4):
-    """LangChain retriever over the single policy knowledge base."""
     return get_vector_store().as_retriever(search_kwargs={"k": k})
 
 
 def retrieve(query: str, k: int = 6) -> List[Document]:
-    """Return the top-k policy documents, dropping near-duplicate bodies.
-
-    The corpus repeats the same fact in several near-identical templates;
-    de-duplicating keeps the grounded context concise and diverse.
-    """
-    # Pull a larger candidate pool so de-duplication still leaves k distinct facts.
     docs = get_retriever(k=max(k * 3, 12)).invoke(query)
     unique, seen = [], set()
     for doc in docs:
@@ -155,7 +126,6 @@ def retrieve(query: str, k: int = 6) -> List[Document]:
 
 
 def format_context(documents: List[Document]) -> str:
-    """Render retrieved documents into a plain-text context block."""
     if not documents:
         return "(No relevant policy excerpts were found.)"
     blocks = []
@@ -168,22 +138,23 @@ def format_context(documents: List[Document]) -> str:
 
 
 def retrieve_context(query: str, k: int = 4) -> Tuple[str, List[Document]]:
-    """Retrieve and format in one call."""
     docs = retrieve(query, k=k)
     return format_context(docs), docs
 
 
 def build_rag_tool(k: int = 4):
-    """Expose retrieval as a LangChain tool that the agent can call."""
     from langchain_core.tools import tool
 
-    @tool("policy_search", return_direct=False)
+    @tool(
+        "policy_search",
+        return_direct=False,
+        description=(
+            "Search the university IT policy knowledge base for supported facts, "
+            "including contact details, VPN, Wi-Fi, printing, accounts, email "
+            "and storage."
+        ),
+    )
     def policy_search(query: str) -> str:
-        """Search the university IT policy knowledge base for supported facts.
-
-        Use this for every university IT question, especially contact details,
-        VPN, Wi-Fi, printing, accounts, email and storage.
-        """
         context, _ = retrieve_context(query, k=k)
         return context
 

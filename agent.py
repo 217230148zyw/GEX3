@@ -1,20 +1,3 @@
-"""Grounded RAG agent for the university IT policy exercise.
-
-Pipeline (deterministic retrieve-then-read, appropriate for a 0.6B model):
-    question -> rag_tool.policy_search (Chroma retrieval over the single policy
-    file) -> a strictly grounded Qwen3-0.6B prompt -> greedy generation.
-
-Hard requirement of the exercise: for "What exact phone number should I call
-for the University IT Service Desk?" the agent must say it does not know / the
-number is not specified, and must never invent one. The knowledge base contains
-no phone number, so retrieval cannot surface one; the prompt instructs
-abstention, and a small groundedness guard replaces any telephone number that
-is not supported by the retrieved excerpts.
-
-The LLM is the LOCAL Qwen3-0.6B model (NOT the 8B / Ollama model from the
-lecture example).
-"""
-
 from __future__ import annotations
 
 import os
@@ -32,14 +15,11 @@ from rag_tool import retrieve_context
 ROOT = Path(__file__).resolve().parent
 MODEL_ID = "Qwen/Qwen3-0.6B"
 
-# Fixed abstention wording used whenever the answer is not in the excerpts.
 ABSTAIN = (
     "I'm sorry, but I don't have that information; the university IT "
     "guidance I was given does not specify it."
 )
 
-# Matches common telephone spellings, e.g. 0800 123 4567, +358 40 1234567,
-# (555) 123-4567, 555-123-4567.
 PHONE_RE = re.compile(r"(\+?\d[\d\s().\-]{6,}\d)")
 
 PROMPT_TEMPLATE = (
@@ -82,15 +62,10 @@ PROMPT_TEMPLATE = (
 _STOP_MARKERS = (
     "\nQuestion:", "\nPolicy excerpts:", "\nUser:", "\nAnswer:", "\nAnswer",
     "\n---", "\n\n\n", "\n",
-)  # the final "\n" keeps only the first answer line (answers are 1-2 sentences)
+)
 
 
 def _truncate_repetition(text: str, ngram: int = 4, max_sentences: int = 4) -> str:
-    """Trim a greedy base model's degenerate phrase loops.
-
-    Keeps the correct prefix, then cuts at the first repeated word n-gram
-    (rounded back to the preceding sentence boundary), and caps sentence count.
-    """
     words = text.split()
     cut = len(words)
     seen = set()
@@ -101,22 +76,16 @@ def _truncate_repetition(text: str, ngram: int = 4, max_sentences: int = 4) -> s
             break
         seen.add(gram)
     text = " ".join(words[:cut]).strip()
-    # Drop a trailing clause fragment (one without a sentence-ending mark).
     ends = list(re.finditer(r"[.!?]", text))
     if ends:
         text = text[: ends[-1].end()].strip()
-    # Cap the number of complete sentences.
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
     if len(sentences) > max_sentences:
         sentences = sentences[:max_sentences]
     return " ".join(sentences).strip()
 
 
-# --------------------------------------------------------------------------- #
-# Local Qwen3-0.6B model resolution and LangChain LLM wrapper
-# --------------------------------------------------------------------------- #
 def resolve_model_path() -> str:
-    """Locate a local Qwen3-0.6B directory, otherwise fetch it from ModelScope."""
     env = os.environ.get("QWEN3_MODEL_PATH")
     candidates = []
     if env:
@@ -130,7 +99,6 @@ def resolve_model_path() -> str:
         if path is not None and (path / "config.json").exists():
             return str(path)
 
-    # Fall back to a ModelScope download inside this repository (VPN off).
     from modelscope import snapshot_download
 
     target = str(ROOT / "models" / "qwen3-0.6b")
@@ -139,8 +107,6 @@ def resolve_model_path() -> str:
 
 
 class QwenLocalLLM(LLM):
-    """A minimal LangChain LLM that runs Qwen3-0.6B locally on CPU."""
-
     model_path: str
     max_new_tokens: int = 96
 
@@ -164,8 +130,6 @@ class QwenLocalLLM(LLM):
     def _generate_text(self, prompt: str) -> str:
         inputs = self._tokenizer(prompt, return_tensors="pt")
         with torch.no_grad():
-            # Plain greedy decoding gives the most faithful extraction on this
-            # small model; any degenerate repetition is trimmed afterwards.
             output = self._model.generate(
                 **inputs,
                 max_new_tokens=self.max_new_tokens,
@@ -182,19 +146,15 @@ class QwenLocalLLM(LLM):
         return self._generate_text(prompt)
 
 
-# --------------------------------------------------------------------------- #
-# Groundedness guard
-# --------------------------------------------------------------------------- #
 def _contains_phone(text: str) -> bool:
     for match in PHONE_RE.findall(text):
         digits = re.sub(r"\D", "", match)
-        if len(digits) >= 7:  # a plausible telephone number
+        if len(digits) >= 7:
             return True
     return False
 
 
 def _grounded_answer(raw_answer: str, context: str) -> str:
-    """Reject answers that state a phone number absent from the excerpts."""
     if _contains_phone(raw_answer) and not _contains_phone(context):
         return ABSTAIN
     answer = raw_answer.strip()
@@ -203,17 +163,11 @@ def _grounded_answer(raw_answer: str, context: str) -> str:
     return answer
 
 
-# --------------------------------------------------------------------------- #
-# The RAG agent
-# --------------------------------------------------------------------------- #
 class RAGAgent:
-    """Retrieves policy excerpts, then answers strictly from them with Qwen3-0.6B."""
-
     def __init__(self, k: int = 6, model_path: Optional[str] = None,
                  max_new_tokens: int = 96):
         self.k = k
         self.llm = QwenLocalLLM(model_path=model_path, max_new_tokens=max_new_tokens)
-        # Retrieval exposed as a LangChain tool (the tool the agent "calls").
         self.search_tool = rag_tool.build_rag_tool(k=k)
 
     def retrieve(self, question: str):
@@ -229,7 +183,6 @@ class RAGAgent:
             return final, sources, context, raw
         return final
 
-    # LangChain Runnable interface: build_agent() | agent.invoke({"question": ...})
     def invoke(self, input_, *args, **kwargs):
         question = input_["question"] if isinstance(input_, dict) else input_
         return self.answer(question)
@@ -246,12 +199,10 @@ def build_agent(k: int = 6, **kwargs) -> RAGAgent:
 
 
 def answer_question(question: str, k: int = 6) -> str:
-    """Convenience one-shot entry point used by rag.py."""
     return build_agent(k=k).answer(question)
 
 
 def as_runnable(k: int = 6):
-    """Expose the agent as a LangChain RunnableLambda (question -> answer)."""
     return RunnableLambda(
         lambda inp: build_agent(k=k).answer(
             inp["question"] if isinstance(inp, dict) else inp
@@ -265,8 +216,8 @@ if __name__ == "__main__":
     q = sys.argv[1] if len(sys.argv) > 1 else (
         "What exact phone number should I call for the University IT Service Desk?"
     )
-    agent = build_agent()
-    answer, sources, context, raw = agent.answer(q, return_sources=True)
+    active_agent = build_agent()
+    answer, sources, context, raw = active_agent.answer(q, return_sources=True)
     print("QUESTION:", q)
     print("SOURCES:", sources)
     print("RAW MODEL:", repr(raw))
