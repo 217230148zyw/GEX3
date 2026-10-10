@@ -1,0 +1,10 @@
+# Downloaded models and local vector index (large binaries; rebuilt on first run)
+models/
+.chroma_index/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
